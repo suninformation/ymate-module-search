@@ -142,14 +142,14 @@ public class Searchs {
 	}
 
 	private static void __doStart() {
-		int _poolSize = getConfig().getThreadPoolSize();
+		int _poolSize = __CFG_CONFIG.getThreadPoolSize();
 		if (_poolSize <= 0) {
 			_poolSize = Runtime.getRuntime().availableProcessors() * 2 + 1;
 		}
 		__executor = Executors.newFixedThreadPool(_poolSize);
 		__scheduler = Executors.newSingleThreadScheduledExecutor();
 		//
-		long _period = getConfig().getScheduledPeriod() * 1000L;
+		long _period = __CFG_CONFIG.getScheduledPeriod() * 1000L;
 		if (_period <= 0) {
 			_period = 30L * 1000L;
 		}
