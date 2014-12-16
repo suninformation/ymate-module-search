@@ -38,6 +38,7 @@ import net.ymate.platform.commons.util.ClassUtils;
 import net.ymate.platform.commons.util.ClassUtils.ClassBeanWrapper;
 import net.ymate.platform.commons.util.RuntimeUtils;
 import net.ymate.platform.module.search.annotation.IndexField;
+import net.ymate.platform.module.search.handler.ICallbackHandler;
 import net.ymate.platform.module.search.handler.IRebuildHandler;
 import net.ymate.platform.module.search.support.IndexedMeta;
 import net.ymate.platform.module.search.support.SearchHelper;
@@ -324,7 +325,7 @@ public class Searchs {
 		return _writer;
 	}
 
-	public static void indexCreate(final ISearchable searchable) {
+	public static void indexCreate(final ISearchable searchable, final ICallbackHandler handler) {
 		__doCheckModuleInited();
 		__scheduler.execute(new Runnable() {
 			
@@ -334,6 +335,9 @@ public class Searchs {
 				Document _doc = __doIndexDocumentCreate(searchable);
 				try {
 	                _writer.addDocument(_doc);
+					if (handler != null) {
+						handler.onIndexCreated(searchable);
+					}
 	            } catch (IOException ex) {
 	                _LOG.error("IndexWriter can not add a document to the lucene index", ex);
 	            }
@@ -341,39 +345,57 @@ public class Searchs {
 		});
 	}
 
-	public static void indexUpdate(final ISearchable searchable) {
+	public static void indexCreate(ISearchable searchable) {
+		indexCreate(searchable, null);
+	}
+
+	public static void indexUpdate(final ISearchable searchable, final ICallbackHandler handler) {
 		__doCheckModuleInited();
 		__scheduler.execute(new Runnable() {
-			
+
 			public void run() {
 				IndexedMeta _meta = getIndexedMeta(searchable);
 				IndexWriter _writer = getIndexWriter(_meta.getIndexName());
 				Document _doc = __doIndexDocumentCreate(searchable);
 				Term term = new Term(IndexedMeta.FIELD_ID, searchable.getId());
 				try {
-	                _writer.updateDocument(term, _doc);
-	            } catch (IOException ex) {
-	                _LOG.error("IndexWriter can not update the document", ex);
-	            }
+					_writer.updateDocument(term, _doc);
+					if (handler != null) {
+						handler.onIndexUpdated(searchable);
+					}
+				} catch (IOException ex) {
+					_LOG.error("IndexWriter can not update the document", ex);
+				}
 			}
 		});
 	}
 
-	public static void indexRemove(final Class<? extends ISearchable> searchableClass, final String id) {
+	public static void indexUpdate(ISearchable searchable) {
+		indexUpdate(searchable, null);
+	}
+
+	public static void indexRemove(final Class<? extends ISearchable> searchableClass, final String id, final ICallbackHandler handler) {
 		__doCheckModuleInited();
 		__scheduler.execute(new Runnable() {
-			
+
 			public void run() {
 				IndexedMeta _meta = getIndexedMeta(searchableClass);
 				IndexWriter _writer = getIndexWriter(_meta.getIndexName());
 				Term term = new Term(IndexedMeta.FIELD_ID, id);
-		        try {
-		            _writer.deleteDocuments(term);
-		        } catch (IOException ex) {
-		        	_LOG.error("IndexWriter can not delete a document from the lucene index", ex);
-		        }
+				try {
+					_writer.deleteDocuments(term);
+					if (handler != null) {
+						handler.onIndexRemoved(searchableClass, id);
+					}
+				} catch (IOException ex) {
+					_LOG.error("IndexWriter can not delete a document from the lucene index", ex);
+				}
 			}
 		});
+	}
+
+	public static void indexRemove(Class<? extends ISearchable> searchableClass, String id) {
+		indexRemove(searchableClass, id, null);
 	}
 
 	public static void indexRebuild(final Class<? extends ISearchable> searchableClass, final int batchSize, final IRebuildHandler handler) {
@@ -411,6 +433,7 @@ public class Searchs {
 						Document _doc = __doIndexDocumentCreate(_data);
 						try {
 			                _writer.addDocument(_doc);
+							handler.onIndexCreated(_data);
 			            } catch (IOException ex) {
 			                _LOG.error("IndexWriter can not add a document to the lucene index", ex);
 			            }

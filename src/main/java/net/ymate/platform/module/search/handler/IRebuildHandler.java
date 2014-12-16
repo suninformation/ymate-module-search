@@ -57,4 +57,11 @@ public interface IRebuildHandler {
 	 */
 	public List<? extends ISearchable> getBatchDatas(int patch, int patchSize);
 
+	/**
+	 * 当索引创建成功时调用此接口方法
+	 *
+	 * @param searchable
+	 */
+	public void onIndexCreated(ISearchable searchable);
+
 }
