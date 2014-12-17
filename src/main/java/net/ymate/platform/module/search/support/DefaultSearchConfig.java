@@ -15,6 +15,10 @@
  */
 package net.ymate.platform.module.search.support;
 
+import net.ymate.platform.commons.util.ExpressionUtils;
+import net.ymate.platform.commons.util.RuntimeUtils;
+import net.ymate.platform.configuration.Cfgs;
+import org.apache.commons.lang.StringUtils;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.util.Version;
@@ -73,12 +77,23 @@ public class DefaultSearchConfig implements ISearchConfig {
 	public DefaultSearchConfig(String directoryPath, Version luceneVersion,
 			Analyzer analyzerImpl, int threadPoolSize, double bufferSize,
 			int scheduledPeriod) {
-		this.directoryPath = directoryPath;
+		this.directoryPath = doParseVariableUserDir(StringUtils.defaultIfEmpty(directoryPath, ""));
 		this.luceneVersion = luceneVersion;
 		this.analyzerImpl = analyzerImpl;
 		this.threadPoolSize = threadPoolSize;
 		this.bufferSize = bufferSize;
 		this.scheduledPeriod = scheduledPeriod;
+	}
+
+	/**
+	 * @param origin 原始字符串
+	 * @return 替换${user.dir}变量
+	 */
+	protected String doParseVariableUserDir(String origin) {
+		if (Cfgs.isInited()) {
+			return ExpressionUtils.bind(origin).set("user.dir", Cfgs.getUserDir()).getResult();
+		}
+		return ExpressionUtils.bind(origin).set("user.dir", RuntimeUtils.getRootPath()).getResult();
 	}
 
 	/* (non-Javadoc)
@@ -89,7 +104,7 @@ public class DefaultSearchConfig implements ISearchConfig {
 	}
 
 	public void setDirectoryPath(String directoryPath) {
-		this.directoryPath = directoryPath;
+		this.directoryPath = doParseVariableUserDir(StringUtils.defaultIfEmpty(directoryPath, ""));
 	}
 
 	/* (non-Javadoc)
