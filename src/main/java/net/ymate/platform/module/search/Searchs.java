@@ -22,6 +22,7 @@ import net.ymate.platform.commons.util.RuntimeUtils;
 import net.ymate.platform.module.search.annotation.IndexField;
 import net.ymate.platform.module.search.handler.ICallbackHandler;
 import net.ymate.platform.module.search.handler.IRebuildHandler;
+import net.ymate.platform.module.search.support.IndexHelper;
 import net.ymate.platform.module.search.support.IndexedMeta;
 import net.ymate.platform.module.search.support.SearchHelper;
 import org.apache.commons.lang.StringUtils;
@@ -31,7 +32,10 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.*;
 import org.apache.lucene.document.Field.Store;
-import org.apache.lucene.index.*;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.Term;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
@@ -43,7 +47,10 @@ import java.io.IOException;
 import java.sql.Timestamp;
 import java.util.*;
 import java.util.Map.Entry;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 
 /**
@@ -81,10 +88,7 @@ public class Searchs {
 
     private static boolean __IS_INITED;
 
-    // 标识当前是否正在执行重新打开索引文件操作
-    private static boolean __IS_WORKING;
-
-    private static Set<String> __IS_BUILD_WORKING_SET;
+    private static IndexHelper __indexHelper;
 
     /**
      * 索引模型元数据描述类缓存
@@ -92,12 +96,10 @@ public class Searchs {
     private static Map<Class<?>, IndexedMeta> __cacheIndexedMetas = new ConcurrentHashMap<Class<?>, IndexedMeta>();
 
     private static ExecutorService __executor;
-    private static ScheduledExecutorService __scheduler;
 
+    public final static Map<String, IndexSearcher> __SEARCH_CACHES = new ConcurrentHashMap<String, IndexSearcher>();
 
-    private final static Map<String, IndexSearcher> __SEARCH_CACHES = new ConcurrentHashMap<String, IndexSearcher>();
-
-    private final static Map<String, IndexWriter> __WRITER_CACHES = new ConcurrentHashMap<String, IndexWriter>();
+    public final static Map<String, IndexWriter> __WRITER_CACHES = new ConcurrentHashMap<String, IndexWriter>();
 
 
     /**
@@ -110,7 +112,6 @@ public class Searchs {
         if (!__IS_INITED) {
             __CFG_CONFIG = config;
             //
-            __IS_BUILD_WORKING_SET = Collections.synchronizedSet(new HashSet<String>());
             try {
                 __doStart();
             } catch (Throwable e) {
@@ -127,35 +128,8 @@ public class Searchs {
             _poolSize = Runtime.getRuntime().availableProcessors() * 2 + 1;
         }
         __executor = Executors.newFixedThreadPool(_poolSize);
-//        // 创建定时任务，用于定时commit相关索引内容变更并Reopen索引文件
-//        __scheduler = Executors.newSingleThreadScheduledExecutor();
-//        // 根据配置计算任务执行间隔时间，默认30秒
-//        long _period = __CFG_CONFIG.getScheduledPeriod() * 1000L;
-//        if (_period <= 0) {
-//            _period = 30L * 1000L;
-//        }
-//        __scheduler.scheduleAtFixedRate(new Runnable() {
-//
-//            public void run() {
-//                if (__IS_WORKING) {
-//                    return;
-//                }
-//                __IS_WORKING = true;
-//                for (Entry<String, IndexSearcher> entry : __SEARCH_CACHES.entrySet()) {
-//                    IndexReader _reader = entry.getValue().getIndexReader();
-//                    try {
-//                        IndexReader _reOpenedReader = DirectoryReader.openIfChanged((DirectoryReader) _reader);
-//                        if (_reOpenedReader != null && _reOpenedReader != _reader) {
-//                            _reader.decRef();
-//                            __SEARCH_CACHES.put(entry.getKey(), new IndexSearcher(_reOpenedReader));
-//                        }
-//                    } catch (IOException ex) {
-//                        _LOG.error("Reopen And DecRef IndexReader Error:", ex);
-//                    }
-//                }
-//                __IS_WORKING = false;
-//            }
-//        }, _period, _period, TimeUnit.MILLISECONDS);
+        //
+        __indexHelper = new IndexHelper(__CFG_CONFIG);
     }
 
     public static void destroy() {
@@ -163,31 +137,11 @@ public class Searchs {
             __IS_INITED = false;
             //
             __doStopSafed(__executor);
-//            __doStopSafed(__scheduler);
-            //
-            for (IndexWriter writer : __WRITER_CACHES.values()) {
-                if (writer != null) {
-                    Directory dir = writer.getDirectory();
-                    try {
-                        writer.commit();
-                        writer.close(true);
-                    } catch (Exception ex) {
-                        _LOG.error("Commit And Close IndexWriter Error", ex);
-                    } finally {
-                        try {
-                            if (dir != null && IndexWriter.isLocked(dir)) {
-                                IndexWriter.unlock(dir);
-                            }
-                        } catch (IOException ex) {
-                            _LOG.error("Unlock IndexWriter", ex);
-                        }
-                    }
-                }
-            }
+            __indexHelper.release();
         }
     }
 
-    private static void __doStopSafed(ExecutorService pool) {
+    public static void __doStopSafed(ExecutorService pool) {
         if (pool != null) {
             pool.shutdown();
             try {
@@ -339,12 +293,6 @@ public class Searchs {
                     }
                 } catch (IOException ex) {
                     _LOG.error("IndexWriter Update Document Error:", ex);
-                } finally {
-                    try {
-                        _writer.commit();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
                 }
             }
         });
@@ -369,12 +317,6 @@ public class Searchs {
                     }
                 } catch (IOException ex) {
                     _LOG.error("IndexWriter Delete Document Error:", ex);
-                } finally {
-                    try {
-                        _writer.commit();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
                 }
             }
         });
@@ -390,13 +332,13 @@ public class Searchs {
     }
 
     private static void __doIndexRebuild(final String name, final int batchSize, final IRebuildHandler handler) {
-        if (__doCheckBuildWorking(name)) {
+        if (__indexHelper.__doCheckBuildWorking(name)) {
             return;
         }
         __executor.execute(new Runnable() {
 
             public void run() {
-                __doSetBuildWorking(name, true);
+                __indexHelper.__doSetBuildWorking(name, true);
                 //
                 IndexWriter _writer = getIndexWriter(name);
                 try {
@@ -422,28 +364,11 @@ public class Searchs {
                 } catch (Exception e) {
                     _LOG.info("Index Rebuilding For " + name + " Error:", RuntimeUtils.unwrapThrow(e));
                 } finally {
-                    try {
-                        _writer.commit();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                    __doSetBuildWorking(name, false);
+                    __indexHelper.__doSetBuildWorking(name, false);
                 }
             }
 
         });
-    }
-
-    private static boolean __doCheckBuildWorking(String name) {
-        return __IS_BUILD_WORKING_SET.contains(name);
-    }
-
-    private static void __doSetBuildWorking(String name, boolean working) {
-        if (working) {
-            __IS_BUILD_WORKING_SET.add(name);
-        } else {
-            __IS_BUILD_WORKING_SET.remove(name);
-        }
     }
 
     /**
